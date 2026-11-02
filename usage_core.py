@@ -8,12 +8,15 @@ Accounts are discovered automatically; config.json in the app folder can overrid
 """
 import base64
 import glob
+import hashlib
 import json
 import os
 import random
 import re
 import subprocess
+import sys
 import threading
+import unicodedata
 import time
 import urllib.error
 import urllib.request
@@ -21,7 +24,13 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 
 HOME = os.path.expanduser("~")
-APP_DIR = os.path.join(os.environ.get("APPDATA", os.path.join(HOME, ".config")), "ai-usage-widget")
+IS_MAC = sys.platform == "darwin"
+if os.name == "nt":
+    APP_DIR = os.path.join(os.environ.get("APPDATA", HOME), "ai-usage-widget")
+elif IS_MAC:
+    APP_DIR = os.path.join(HOME, "Library", "Application Support", "ai-usage-widget")
+else:
+    APP_DIR = os.path.join(os.environ.get("XDG_CONFIG_HOME", os.path.join(HOME, ".config")), "ai-usage-widget")
 CONFIG_FILE = os.path.join(APP_DIR, "config.json")
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -69,13 +78,67 @@ except Exception:
     _LAST_GOOD = {}
 
 
+def _has_claude_login(d):
+    """A login lives in .credentials.json (Windows/Linux) or, on macOS, in the Keychain; there the
+    folder's .claude.json (or ~/.claude.json for the default folder) records the signed-in account."""
+    if os.path.exists(os.path.join(d, ".credentials.json")):
+        return True
+    if not IS_MAC:
+        return False
+    meta = os.path.join(HOME, ".claude.json") if _is_default(d) else os.path.join(d, ".claude.json")
+    try:
+        with open(meta, encoding="utf-8") as fh:
+            return bool(json.load(fh).get("oauthAccount"))
+    except Exception:
+        return False
+
+
+def _is_default(d):
+    return os.path.normcase(os.path.abspath(d)) == os.path.normcase(os.path.join(HOME, ".claude"))
+
+
+def _keychain_services(d, override=None):
+    """macOS Keychain item names Claude Code uses: 'Claude Code-credentials' for the default folder,
+    plus '-' + sha256(config dir)[:8] for a CLAUDE_CONFIG_DIR account (Claude Code 2.1.56+)."""
+    if override:
+        return [override]
+    base = "Claude Code-credentials"
+    path = os.path.abspath(d)
+    hashed = [f"{base}-{hashlib.sha256(unicodedata.normalize('NFC', p).encode()).hexdigest()[:8]}"
+              for p in dict.fromkeys((path, path.rstrip("/") + "/", os.path.realpath(path)))]
+    return [base] + hashed if _is_default(d) else hashed
+
+
+def _claude_creds(d, keychain_service=None):
+    """claudeAiOauth dict from .credentials.json, else (macOS) from the Keychain. None if not found."""
+    cred = os.path.join(d, ".credentials.json")
+    if os.path.exists(cred):
+        with open(cred, encoding="utf-8") as fh:
+            return json.load(fh).get("claudeAiOauth") or {}
+    if not IS_MAC:
+        return None
+    for svc in _keychain_services(d, keychain_service):  # macOS may ask once to allow Keychain access
+        r = subprocess.run(["security", "find-generic-password", "-s", svc, "-w"], capture_output=True, text=True, timeout=20)
+        if r.returncode == 0 and r.stdout.strip():
+            try:
+                return json.loads(r.stdout.strip()).get("claudeAiOauth") or {}
+            except ValueError:
+                continue
+    return None
+
+
+_KEYCHAIN = {}  # config dir -> keychain_service override from config.json
+
+
 def claude_accounts():
     """[(name, config_dir)]: config.json "claude" list, else every ~/.claude* folder that holds a login."""
     cfg = config().get("claude")
     if cfg:
+        for a in cfg:
+            if a.get("keychain_service"):
+                _KEYCHAIN[os.path.expanduser(a["dir"])] = a["keychain_service"]
         return [(a["name"], os.path.expanduser(a["dir"])) for a in cfg]
-    dirs = [d for d in glob.glob(os.path.join(HOME, ".claude*")) if os.path.isdir(d)
-            and os.path.exists(os.path.join(d, ".credentials.json"))]
+    dirs = [d for d in glob.glob(os.path.join(HOME, ".claude*")) if os.path.isdir(d) and _has_claude_login(d)]
     dirs.sort(key=lambda d: (os.path.basename(d) != ".claude", d))
     return [(os.path.basename(d).lstrip("."), d) for d in dirs]
 
@@ -90,7 +153,7 @@ def claude_usage(net=True):
 
 
 def _claude_row(name, d, net):
-    default = os.path.normcase(d) == os.path.normcase(os.path.join(HOME, ".claude"))
+    default = _is_default(d)
     row = {"name": name, "email": "?", "org": "?", "plan": "", "session": None, "weekly": [], "extra": None,
            "note": "", "login": "logged in", "default": default}
     try:
@@ -101,12 +164,10 @@ def _claude_row(name, d, net):
             row["email"] = acct.get("emailAddress", "?")
             org = acct.get("organizationName", "?")
             row["org"] = "Personal" if org.endswith("'s Organization") else org
-        cred = os.path.join(d, ".credentials.json")
-        if not os.path.exists(cred):
+        o = _claude_creds(d, _KEYCHAIN.get(d))
+        if o is None:
             row.update(note="not logged in", login="not logged in")
             return row
-        with open(cred, encoding="utf-8") as fh:
-            o = json.load(fh).get("claudeAiOauth") or {}
         row["plan"] = f"{o.get('subscriptionType', '')} {str(o.get('rateLimitTier', '')).replace('default_claude_', '')}".strip()
         if not net:
             row["note"] = "skipped (offline)"

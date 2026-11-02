@@ -1,13 +1,25 @@
 {
-  "_comment": "Optional. Copy to %APPDATA%\\ai-usage-widget\\config.json. Omit any key to keep auto-detection.",
+  "_comment": "Optional. Copy to the app folder as config.json (Windows: %APPDATA%\\ai-usage-widget, macOS: ~/Library/Application Support/ai-usage-widget). Omit any key to keep auto-detection.",
   "claude": [
-    { "name": "work", "dir": "~/.claude" },
-    { "name": "personal", "dir": "~/.claude-personal" }
+    {
+      "name": "work",
+      "dir": "~/.claude"
+    },
+    {
+      "name": "personal",
+      "dir": "~/.claude-personal",
+      "keychain_service": "Claude Code-credentials-1a2b3c4d"
+    }
   ],
   "codex": [
-    { "name": "codex", "dir": "~/.codex" }
+    {
+      "name": "codex",
+      "dir": "~/.codex"
+    }
   ],
-  "copilot": ["your-github-login"],
+  "copilot": [
+    "your-github-login"
+  ],
   "mask_emails": false,
   "refresh_seconds": 300,
   "port": 8765
