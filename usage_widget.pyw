@@ -2,18 +2,17 @@
 
 Dock mode (default): a panel on the right screen edge; drag it up/down, "—" minimizes it to a slim handle.
 Floating mode: a small pill you can drag anywhere; click it to open the card.
-Ctrl+Alt+U hides/shows it from anywhere; right-click for the menu.
+Ctrl+Alt+U hides/shows it from anywhere (Windows); right-click (or Control-click) for the menu.
 
-  pythonw usage_widget.pyw            # last mode used
+  pythonw usage_widget.pyw            # last mode used (macOS/Linux: python3 usage_widget.pyw)
   pythonw usage_widget.pyw --dock     # right-edge dock
   pythonw usage_widget.pyw --float    # floating pill
   pythonw usage_widget.pyw --demo     # made-up accounts (no network, nothing read) for screenshots
   pythonw usage_widget.pyw --mask     # mask emails, e.g. for screen sharing
 
-Pure Python standard library (tkinter + ctypes); no packages to install.
+Windows, macOS (and Linux). Pure Python standard library; no packages to install.
 """
 import ctypes
-import ctypes.wintypes as wt
 import json
 import os
 import queue
@@ -42,13 +41,15 @@ CLAUDE, CODEX, COPILOT, GLM = "#d97757", "#7d8cff", "#8957e5", "#2f9e8f"
 PROV_COL = {"claude": CLAUDE, "codex": CODEX, "copilot": COPILOT, "glm": GLM}
 PROV_GLYPH = {"claude": "✳", "codex": "⬡", "copilot": "◈", "glm": "Z"}
 LOGIN = {"logged in": OK, "expired": WARN, "re-logged": WARN, "not logged in": IDLE, "never run": IDLE}  # login dot colours
-F = "Segoe UI"
+IS_WIN, IS_MAC = os.name == "nt", sys.platform == "darwin"
+F = "Segoe UI" if IS_WIN else "Helvetica Neue" if IS_MAC else "DejaVu Sans"
 
-user32 = ctypes.windll.user32
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(2)
-except Exception:
-    pass
+user32 = ctypes.windll.user32 if IS_WIN else None
+if IS_WIN:
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        pass
 
 
 def colour(p, live=True):
@@ -89,6 +90,17 @@ def expiry(iso):
     return f"{t.strftime('%b')} {t.day} {t.strftime('%H:%M')}"
 
 
+def borderless(root):
+    """No title bar. macOS: Tk's 'plain' window style, which (unlike overrideredirect) still gets clicks."""
+    if IS_MAC:
+        try:
+            root.tk.call("::tk::unsupported::MacWindowStyle", "style", root._w, "plain", "none")
+            return
+        except tk.TclError:
+            pass
+    root.overrideredirect(True)
+
+
 def mask(email):
     """alice@example.com -> a•••@e•••.com (for screen sharing)."""
     if not MASK or "@" not in (email or ""):
@@ -127,7 +139,10 @@ def ensure_service():
 
 
 def hotkey_thread(q):
-    """Ctrl+Alt+U anywhere -> toggle. RegisterHotKey with no window posts WM_HOTKEY to this thread."""
+    """Ctrl+Alt+U anywhere -> toggle (Windows). RegisterHotKey with no window posts WM_HOTKEY to this thread."""
+    if not IS_WIN:
+        return
+    import ctypes.wintypes as wt
     MOD_ALT, MOD_CONTROL, MOD_NOREPEAT, WM_HOTKEY = 0x1, 0x2, 0x4000, 0x0312
     if not user32.RegisterHotKey(None, 1, MOD_ALT | MOD_CONTROL | MOD_NOREPEAT, ord("U")):
         return
@@ -140,7 +155,7 @@ def hotkey_thread(q):
 class Widget:
     def __init__(self):
         self.root = tk.Tk()
-        self.root.overrideredirect(True)
+        borderless(self.root)
         self.root.attributes("-topmost", True)
         self.root.configure(bg=BG)
         self.data, self.error, self.open, self.tab = None, None, "--open" in sys.argv, load_state().get("tab", "all")
@@ -153,7 +168,8 @@ class Widget:
         self.menu = tk.Menu(self.root, tearoff=0, bg=PANEL, fg=TEXT, activebackground=LINE, activeforeground=TEXT, bd=0)
         self.menu.add_command(label="Refresh", command=lambda: self.refresh(force=True))
         self.menu.add_command(label="Reset position", command=self.reset_pos)
-        self.menu.add_command(label="Hide (Ctrl+Alt+U to show)", command=self.hide)
+        if IS_WIN:  # without the global hotkey there'd be no way to bring a hidden widget back
+            self.menu.add_command(label="Hide (Ctrl+Alt+U to show)", command=self.hide)
         self.menu.add_separator()
         self.menu.add_command(label="Quit widget", command=self.root.destroy)
         self.render()
@@ -168,10 +184,19 @@ class Widget:
         self.refresh()
 
     # ---------- window plumbing ----------
+    def bind_menu(self, w):
+        popup = lambda e: self.menu.tk_popup(e.x_root, e.y_root)
+        w.bind("<Button-3>", popup)
+        if IS_MAC:  # two-finger click / Control-click
+            w.bind("<Button-2>", popup)
+            w.bind("<Control-Button-1>", popup)
+
     def hwnd(self):
         return user32.GetParent(self.root.winfo_id()) or self.root.winfo_id()
 
     def round_corners(self):
+        if not IS_WIN:
+            return
         try:  # Windows 11 rounded corners (DWMWA_WINDOW_CORNER_PREFERENCE = 33, DWMWCP_ROUND = 2)
             v = ctypes.c_int(2)
             ctypes.windll.dwmapi.DwmSetWindowAttribute(self.hwnd(), 33, ctypes.byref(v), ctypes.sizeof(v))
@@ -179,6 +204,8 @@ class Widget:
             pass
 
     def virtual_screen(self):
+        if not IS_WIN:
+            return 0, 0, self.root.winfo_vrootwidth() or self.root.winfo_screenwidth(), self.root.winfo_vrootheight() or self.root.winfo_screenheight()
         g = user32.GetSystemMetrics
         return g(76), g(77), g(78), g(79)  # x, y, w, h across all monitors
 
@@ -240,7 +267,7 @@ class Widget:
         w.bind("<ButtonPress-1>", press)
         w.bind("<B1-Motion>", motion)
         w.bind("<ButtonRelease-1>", release)
-        w.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+        self.bind_menu(w)
         for c in w.winfo_children():
             self.bind_vdrag(c, on_click)
 
@@ -271,7 +298,7 @@ class Widget:
         w.bind("<ButtonPress-1>", press)
         w.bind("<B1-Motion>", motion)
         w.bind("<ButtonRelease-1>", release)
-        w.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+        self.bind_menu(w)
         for c in w.winfo_children():
             self.bind_drag(c, on_click)
 
@@ -455,7 +482,7 @@ class Widget:
         b.bind("<ButtonRelease-1>", lambda e: cmd())
         b.bind("<Enter>", lambda e: b.configure(fg=TEXT))
         b.bind("<Leave>", lambda e: b.configure(fg=MUTE))
-        b.bind("<Button-3>", lambda e: self.menu.tk_popup(e.x_root, e.y_root))
+        self.bind_menu(b)
         return b
 
     def dock(self):
