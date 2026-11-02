@@ -1,0 +1,8 @@
+__pycache__/
+*.pyc
+config.json
+*.key
+last-good.json
+widget*.json
+.env
+docs/raw/

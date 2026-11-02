@@ -1,0 +1,14 @@
+{
+  "_comment": "Optional. Copy to %APPDATA%\\ai-usage-widget\\config.json. Omit any key to keep auto-detection.",
+  "claude": [
+    { "name": "work", "dir": "~/.claude" },
+    { "name": "personal", "dir": "~/.claude-personal" }
+  ],
+  "codex": [
+    { "name": "codex", "dir": "~/.codex" }
+  ],
+  "copilot": ["your-github-login"],
+  "mask_emails": false,
+  "refresh_seconds": 300,
+  "port": 8765
+}
